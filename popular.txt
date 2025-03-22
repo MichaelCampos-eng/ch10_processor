@@ -1,0 +1,8 @@
+Bitshift: 0, Words: , Count: 4184070 
+Bitshift: 1, Words: , Count: 4184070 
+Bitshift: 2, Words: , Count: 4184070 
+Bitshift: 3, Words: , Count: 4184070 
+Bitshift: 4, Words: , Count: 4184070 
+Bitshift: 5, Words: , Count: 4184070 
+Bitshift: 6, Words: , Count: 4184070 
+Bitshift: 7, Words: , Count: 4184070 
