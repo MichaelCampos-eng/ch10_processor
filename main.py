@@ -72,7 +72,7 @@ def extract_ch10(ch10_path: str,
                 data_json[PJson.pcm_format.value] = dict(map(lambda x: (re.sub(r"[\/\\-]", '', x[0].decode("utf-8")), x[1].decode("utf-8")), packet["P"].items()))
 
             if packet.data_type == 0x09:
-                if iterations and int(iterations) < index:
+                if iterations and int(iterations) == index:
                     break
 
                 packet: PCMF1 = packet

@@ -41,7 +41,7 @@ class BodyStream:
     def append_time(self, timestamp: datetime.datetime):
         self.__timestamps__.append(timestamp)
     
-    def __find_sfp_indices__(self, main_list: np.ndarray[np.uint8], sub_list: np.ndarray[np.uint8]):
+    def __find_sfp_indices__(self, main_list: np.ndarray[np.uint8], sub_list: np.ndarray[np.uint8]) -> np.ndarray[np.uint8]:
         shape = (main_list.size - sub_list.size + 1, sub_list.size)
         strides = (main_list.strides[0], main_list.strides[0])
         windows = np.lib.stride_tricks.as_strided(main_list, shape=shape, strides=strides)
@@ -62,12 +62,11 @@ class BodyStream:
         shift, indices = max(potentials_indices.items(), key=lambda x: len(x[1]))
         indices = indices[indices >= info.frame_byte_length]
         aligned = self.__align__(shift, info.bit_per_byte)
-        frames = np.empty((info.frame_byte_length, len(indices)), dtype=np.uint8)
+        frames = np.empty((info.minor_frame_length, len(indices)), dtype=np.uint16)
         for count, index in enumerate(indices):
-            frames[:, count] = aligned[index - info.frame_byte_length + 4: index + 4]
-        
-        print("Found {} frames".format(frames.shape[1]))
-        print("Frame at first index: \n{}".format(frames[:, 64]))
+            frames[:, count] = aligned[index - info.frame_byte_length + 4: index + 4].astype(np.uint8).view('<u2')
+
+        print(self.__timestamps__)
 
 
     def create_frames(self, info: FrameInfo):
