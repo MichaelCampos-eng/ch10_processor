@@ -1,4 +1,4 @@
-
+import binascii
 
 class TMATS:
     
@@ -29,6 +29,9 @@ class PCMFormat(TMATS):
         return self.P1MF4
 
     def get_sync_pattern(self):
+        bin = "Binary Repr: {}".format(self.P1MF5)
+        hex = "Hex Repr: {}".format()
+
         return self.P1MF5
 
     def get_words_per_minor_frame(self):

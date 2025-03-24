@@ -6,3 +6,4 @@ class PJson(Enum):
     general_data = "general_data"
     recorder = "recorder"
     pcm_format = "pcm_format"
+    pcm_packet = "pcm_packet"
