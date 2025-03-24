@@ -11,7 +11,6 @@ class TMATS:
         for key, val in vars(self).items():
             rep += f"{key}: {val}\n"
         return rep
-        
 
 class GeneralData(TMATS):
     def __init__(self, data: dict):
@@ -29,10 +28,9 @@ class PCMFormat(TMATS):
         return self.P1MF4
 
     def get_sync_pattern(self):
-        bin = "Binary Repr: {}".format(self.P1MF5)
-        hex = "Hex Repr: {}".format()
-
-        return self.P1MF5
+        bin = "Binary: {}".format(self.P1MF5)
+        hex = "Hex: {}".format(binascii.hexlify(self.P1MF5.encode())).decode()
+        return bin + "\n" + hex
 
     def get_words_per_minor_frame(self):
         return self.P1F1 
