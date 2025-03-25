@@ -3,7 +3,7 @@ from chapter10.pcm import PCMF1
 from chapter10.computer import ComputerF1
 
 from tmats import GeneralData, Recorder, PCMFormat
-from stream import BodyStream, FrameInfo
+from stream import BodyStream, FrameInfo, TimeInfo
 from names import PJson
 
 from tqdm import tqdm
@@ -11,11 +11,16 @@ from tqdm import tqdm
 from typing import Optional
 import argparse
 import json
-import re
 import os
 
 """
 C10.Packet get_raw body skips over some bytes but buffer has already accounted for that
+
+Assumptions:
+- TMATS is in the first packet
+- Throughput mode is on
+- Little endian for decoding
+- Each channel has only 1 packet type
 """
 
 def explore_tmats(saved_path: str):
@@ -52,51 +57,93 @@ def explore_tmats(saved_path: str):
                     if detail_input in methods:
                         print(f"{detail_input}: " + getattr(pcm_format, detail_input)())
 
+def extract_tmats(ch10_path: str,
+                 save_path: str):
+    with open(save_path, 'wb') as file:
+        data_json = {}
+        for packet in tqdm(C10(ch10_path)):
+            if packet.data_type == 0x01:
+                packet: ComputerF1 = packet
+                data_json[PJson.general_data.value] = GeneralData.parse(packet=packet)
+                data_json[PJson.recorder.value] = Recorder.parse(packet=packet)
+                data_json[PJson.pcm_format.value] = PCMFormat.parse(packet=packet)
+        json.dump(data_json, file, indent=4)
+
+class TMA:
+    def __init__(self):
+        self.time_count = {}
+        self.frame_count = {}
+
+    def incr_tm_cnt(self, channel_id: int):
+        if channel_id not in self.time_count.keys():
+            self.time_count[channel_id] = 0
+        self.time_count[channel_id] += 1
+    
+    def incr_frm_cnt(self, channel_id: int, amount: int):
+        if channel_id not in self.frame_count.keys():
+            self.frame_count[channel_id] = 0
+        self.frame_count[channel_id] += amount
+
+def get_tmats(ch10_path: str) -> FrameInfo:
+    for packet in C10(ch10_path):
+        if packet.data_type == 0x01:
+            packet: ComputerF1 = packet
+            pcm_format = PCMFormat(PCMFormat.parse(packet=packet))
+            return FrameInfo(minor_frame_length = pcm_format.P1F1,
+                             minor_frame_per_major_frame = pcm_format.P1MFN,
+                             frame_sync_pattern = pcm_format.P1MF5)
+
+def extract_memory_allocation(ch10_path: str, info: FrameInfo) -> TMA:
+    memory_allocation = TMA()
+    for packet in tqdm(C10(ch10_path)):
+        memory_allocation.incr_tm_cnt(packet.channel_id)
+        if packet.data_type == 0x09:
+            packet: PCMF1 = packet
+            memory_allocation.incr_frm_cnt(packet.channel_id, BodyStream.get_frame_count(packet.buffer.read(), info))
+    return memory_allocation  
+            
+
 def extract_ch10(ch10_path: str,
-                 save_path: str,
                  verbose: bool,
                  channel: Optional[int],
                  iterations: Optional[int]):
     
-    os.system("clear")
-    with open(save_path, 'wb') as file:
-        data_json = {}
-        streams = {}
-        index = 0
-        for packet in tqdm(C10(ch10_path)):
+    info: FrameInfo = get_tmats(ch10_path)
+    memory_alloc = extract_memory_allocation(ch10_path, info)
+    times = {channel_id: TimeInfo(channel_id=channel_id, memory_size=size) for channel_id, size in memory_alloc.time_count.items()}
 
-            if packet.data_type == 0x01:
-                packet: ComputerF1 = packet
-                data_json[PJson.general_data.value] = dict(map(lambda x: (re.sub(r"[\/\\-]", '', x[0].decode("utf-8")), x[1].decode("utf-8")), packet["G"].items()))
-                data_json[PJson.recorder.value] = dict(map(lambda x: (re.sub(r"[\/\\-]", '', x[0].decode("utf-8")), x[1].decode("utf-8")), packet["R"].items()))
-                data_json[PJson.pcm_format.value] = dict(map(lambda x: (re.sub(r"[\/\\-]", '', x[0].decode("utf-8")), x[1].decode("utf-8")), packet["P"].items()))
+    init_time = None
+    prev_time = None
+    payloads = {}
+    index = 0
+    for packet in C10(ch10_path):
+        os.system("clear")
+        print(index)
+        if iterations and iterations == index:
+            break
+        
+        # Assuming tmats is the first packet
+        if packet.data_type == 0x01:
+            packet: ComputerF1 = packet
+            init_time = packet.get_time()
+            continue
 
-            if packet.data_type == 0x09:
-                if iterations and int(iterations) == index:
-                    break
+        # Calculate delta times
+        timeinfo = times[packet.channel_id]
+        if prev_time != None:
+            prev_time.append_delta_time(packet.get_time(), init_time)
+        timeinfo.append_time(packet.get_time(), init_time)
+        prev_time = timeinfo
 
-                packet: PCMF1 = packet
-                if not packet.channel_id in streams.keys():
-                    print("\nFound channel id: {}".format(packet.channel_id))
-                    streams[packet.channel_id] = BodyStream(packet.channel_id)
-                bodystream: BodyStream = streams[packet.channel_id]
-                bodystream.append_body(packet.buffer.read())
-                bodystream.append_time(packet.get_time())
-                BodyStream.save_stream(bodystream.__data__)
-                index += 1
-
-        if verbose and channel and channel in streams.keys():
-            bodystream: BodyStream = streams[channel]
-
-
-        # Testing
-        print("\nBegin create frames for channel {}\n".format(list(streams.values())[0].channel_id))
-        fi = FrameInfo(minor_frame_length=25,
-                       bit_per_byte=8,
-                       minor_frame_per_major_frame=64)
-        list(streams.values())[0].create_frames(fi)
-
-        # json.dump(data_json, file, indent=4)
+        # Decode PCM body if valid
+        if not timeinfo.is_end() and packet.data_type == 0x09:
+            packet: PCMF1 = packet
+            if not packet.channel_id in payloads.keys():
+                payloads[packet.channel_id] = BodyStream(times[packet.channel_id], info, memory_alloc.frame_count[packet.channel_id])
+            bodystream: BodyStream = payloads[packet.channel_id]
+            bodystream.append_body(packet.buffer.read())
+        
+        index += 1
 
 if __name__ == "__main__":
     
@@ -115,12 +162,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.extract and args.save:
-        extract_ch10(save_path=args.save, 
-                     ch10_path=args.extract, 
-                     verbose=args.verbose, 
-                     channel=args.channel_id,
-                     iterations = args.iterations)
+    if args.extract and not args.tmats:
+        extract_ch10(ch10_path= args.extract, 
+                     verbose= args.verbose, 
+                     channel= int(args.channel_id) if args.channel_id else None,
+                     iterations = int(args.iterations) if args.iterations else None)
     elif args.tmats:
         explore_tmats(args.tmats)
     else:
