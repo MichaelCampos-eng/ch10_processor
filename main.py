@@ -2,17 +2,24 @@ from chapter10 import C10
 from chapter10.pcm import PCMF1
 from chapter10.packet import Packet
 from chapter10.computer import ComputerF1
+from chapter10.time import TimeF1
 
 from tmats import GeneralData, Recorder, PCMFormat
 from stream import BodyStream, FrameInfo, TimeInfo
 from names import PJson
 
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
+import numpy as np
 
 from typing import Optional
 import argparse
 import json
 import os
+import sys
+
+from dataclasses import dataclass
 
 """
 C10.Packet get_raw body skips over some bytes but buffer has already accounted for that
@@ -22,6 +29,10 @@ Assumptions:
 - Throughput mode is on
 - Little endian for decoding
 - Each channel has only 1 packet type
+
+Clarity: 
+- TMATS packet time is the current time one is decoding the file stream
+- TimeF1 should be used as a time anchor point for PCM packets
 """
 
 def explore_tmats(saved_path: str):
@@ -81,90 +92,85 @@ def get_tmats(ch10_path: str) -> FrameInfo:
 
 class MemorySize:
     def __init__(self, ch10_path: str, info: FrameInfo):
-        self.time_count = {}
-        self.frame_count = {}
+        self.t_size: dict[int: int] = {}
+        self.f_size: dict[int: int] = {}
         self.__index__ = 0
         self.__extract__(ch10_path, info)
 
-    def incr_tm_cnt(self, channel_id: int):
-        if channel_id not in self.time_count.keys():
-            self.time_count[channel_id] = 0
-        self.time_count[channel_id] += 1
+    def __incr_time__(self, channel_id: int):
+        if channel_id not in self.t_size.keys():
+            self.t_size[channel_id] = 0
+        self.t_size[channel_id] += 1
     
-    def incr_frm_cnt(self, channel_id: int, amount: int):
-        if channel_id not in self.frame_count.keys():
-            self.frame_count[channel_id] = 0
-        self.frame_count[channel_id] += amount
-    
-    def decr_frm_cnt(self, channel_id: int, amount: int):
-        if channel_id in self.frame_count.keys():
-            self.frame_count[channel_id] -= amount
+    def __incr_frame__(self, channel_id: int, amount: int):
+        if channel_id not in self.f_size.keys():
+            self.f_size[channel_id] = 0
+        self.f_size[channel_id] += amount
         
     def __extract__(self, ch10_path: str, info: FrameInfo):
-        frame_count = None
-        channel_id = None
         for packet in tqdm(C10(ch10_path)):
-            channel_id = packet.channel_id
-            self.incr_tm_cnt(channel_id)
+            if not packet.data_type == 0x01:
+                self.__incr_time__(packet.channel_id)
             if packet.data_type == 0x09:
                 packet: PCMF1 = packet
                 frame_count = BodyStream.get_frame_count(packet.buffer.read(), info)
-                self.incr_frm_cnt(channel_id, frame_count)
-        if frame_count and channel_id: # Exclude the last packet
-            self.decr_frm_cnt(channel_id, frame_count) 
+                self.__incr_frame__(packet.channel_id, frame_count)
+
 
 def decode_ch10(ch10_path: str,
                  verbose: bool,
                  channel: Optional[int],
                  iterations: Optional[int]):
+    
 
     info: FrameInfo = get_tmats(ch10_path)
-    payloads: list[int: BodyStream] = {}
-    times: list[int: TimeInfo] = {}
-    memory_alloc = MemorySize(ch10_path, info)
+    memory = MemorySize(ch10_path, info)
 
-    for channel_id in memory_alloc.time_count.keys():
-        size = memory_alloc.time_count[channel_id]
-        print("Size: {}".format(size))
-        stream_size = None
-        if channel_id in memory_alloc.frame_count.keys():
-            stream_size = memory_alloc.frame_count[channel_id]
-        times[channel_id] = TimeInfo(channel_id, size, stream_size=stream_size)
+    # Set up times
+    times: list[int: TimeInfo] = {}
+    for channel_id, time_size in memory.t_size.items():
+        stream_size = memory.f_size[channel_id] if channel_id in memory.f_size.keys() else None
+        times[channel_id] = TimeInfo(time_size, stream_size=stream_size)
+    
+    # Set up body streams
+    payloads: list[int: BodyStream] = {}
+    for channel_id, stream_size in memory.f_size.items():
+        payloads[channel_id] = BodyStream(times[channel_id], info, stream_size)
 
     index = 0
     offset = None
     last_packet: Packet = None
     for packet in C10(ch10_path):
+        print(index)
+        if packet.data_type == 0x01:
+            continue
+
         if iterations and iterations == index:
-            if channel:
-                print(payloads[packet.channel_id])
+            print("Channel ID: {}".format(packet.channel_id))
+            print(payloads[packet.channel_id])
             break
         index += 1
 
-        # Assuming tmats is the first packet
-        if packet.data_type == 0x01:
-            packet: ComputerF1 = packet
+        # Assuming first TimeF1 packet comes before any PCM packet
+        if packet.data_type == 0x11 and not offset:
+            packet: TimeF1 = packet
             offset = packet.get_time()
         
         if last_packet != None:
             # Compute deltas
-            last_timeinfo: TimeInfo = times[last_packet.channel_id]
             curr_timeinfo: TimeInfo = times[packet.channel_id]
+            last_timeinfo: TimeInfo = times[last_packet.channel_id]
             curr_timeinfo.append_time(packet.get_time(), offset)
             last_timeinfo.append_delta_time(packet.get_time(), offset)
 
-            # Decode PCM body, excluding the last packet
+            # Compute time for each word
             if last_packet.data_type == 0x09:
                 last_packet: PCMF1 = last_packet
+                bodystream: BodyStream = payloads[last_packet.channel_id]
                 # If packet is first in its channel, unable to compute times without dt
-                if not last_packet.channel_id in payloads.keys():
-                    bodystream: BodyStream = BodyStream(last_timeinfo, info, memory_alloc.frame_count[last_packet.channel_id])
-                    bodystream.append_body(last_packet.buffer.read())
-                    payloads[last_packet.channel_id] = bodystream
-                else:
-                    bodystream: BodyStream = payloads[last_packet.channel_id]
+                if not bodystream.is_empty:
                     bodystream.compute_times()
-                    bodystream.append_body(last_packet.buffer.read())
+                bodystream.append_body(last_packet.buffer.read())
 
         last_packet = packet
                 
@@ -191,6 +197,7 @@ if __name__ == "__main__":
                      verbose= args.verbose, 
                      channel= int(args.channel_id) if args.channel_id else None,
                      iterations = int(args.iterations) if args.iterations else None)
+        
     elif args.extract_tmats and not args.explore_tmats:
         extract_tmats(args.extract_tmats, args.save)
     elif args.explore_tmats:

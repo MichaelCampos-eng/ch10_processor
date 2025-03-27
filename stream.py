@@ -2,6 +2,8 @@ import numpy as np
 import datetime
 import matplotlib.pyplot as plt
 from typing import Optional
+from dataclasses import dataclass
+
 
 '''
 Because there is no end time for the last PCM packet, we discard this packet
@@ -34,11 +36,10 @@ class FrameInfo:
 
 class TimeInfo:
     
-    def __init__(self, channel_id: int, time_size: int, stream_size: Optional[int]):
-        self.channel_id = channel_id
-        self.__t_stamps__: np.ndarray[np.uint16] = np.empty((time_size,), dtype=np.uint16)
-        self.__delta_times__: np.ndarray[np.uint16] = np.empty((time_size - 1,), dtype=np.uint16)
-        self.times: Optional[np.ndarray[np.uint16]] = np.empty((stream_size, ), np.uint16) if stream_size else None
+    def __init__(self, time_size: int, stream_size: Optional[int]):
+        self.__t_stamps__: np.ndarray[np.uint64] = np.empty((time_size,), dtype=np.uint64)
+        self.__delta_times__: np.ndarray[np.uint64] = np.empty((time_size - 1,), dtype=np.uint64)
+        self.times: Optional[np.ndarray[np.uint64]] = np.empty((stream_size, ), np.uint64) if stream_size else None
 
         self.__ts_index__: int = 0
         self.__dt_index__: int = 0
@@ -58,7 +59,7 @@ class TimeInfo:
 
     # Retrieves current relative timestamp
     def get_ts(self) -> np.uint16:
-        return self.__t_stamps__[self.__ts_index__]
+        return self.__t_stamps__[self.__ts_index__ - 1]
 
     @property
     def count(self):
@@ -74,16 +75,11 @@ class BodyStream:
         self.__index__ = 0
     
     def __str__(self):
-        header = "BodyStream for Channel: {}\n".format(self.channel_id)
         frames_contents = "Number of frames: {}, Frame length: {}\n".format(self.__frames__.shape[1], self.__frames__.shape[0])
         time_contents = "Number of time deltas: {}\n".format(self.time_info.count)
         dt_contents = "Number of times: {}\n".format(self.time_info.times.shape)
         divider = "#" * 50
-        return header + frames_contents + time_contents  + dt_contents + divider
-
-    @property
-    def channel_id(self):
-        return self.time_info.channel_id
+        return frames_contents + time_contents  + dt_contents + divider
     
     def append_body(self, new_data: bytes):
         new_data = np.frombuffer(buffer=new_data, dtype=np.uint8)
@@ -95,7 +91,10 @@ class BodyStream:
     def compute_times(self):
         sub_times = np.arange(self.__delta__) * self.time_info.get_dt() / self.__delta__ + self.time_info.get_ts()
         self.time_info.times[self.__index__ - self.__delta__ : self.__index__] = sub_times
-        
+    
+    @property
+    def is_empty(self):
+        return self.__index__ == 0
     
     @staticmethod
     def extract_frames(data: np.ndarray[np.uint8], info: FrameInfo) -> np.ndarray[np.uint16]:
