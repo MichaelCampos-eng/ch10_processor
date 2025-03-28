@@ -1,8 +1,10 @@
 import numpy as np
 import datetime
 import matplotlib.pyplot as plt
+from chapter10 import C10
 from typing import Optional
-from dataclasses import dataclass
+from tqdm import tqdm
+from chapter10.pcm import PCMF1
 
 
 '''
@@ -147,3 +149,29 @@ class BodyStream:
             reg[1:] = reg[:-1]
             reg[0] = stream_bits[i]
         return np.packbits(output)
+
+class MemorySize:
+    def __init__(self, ch10_path: str, info: FrameInfo):
+        self.t_size: dict[int: int] = {}
+        self.f_size: dict[int: int] = {}
+        self.__index__ = 0
+        self.__extract__(ch10_path, info)
+
+    def __incr_time__(self, channel_id: int):
+        if channel_id not in self.t_size.keys():
+            self.t_size[channel_id] = 0
+        self.t_size[channel_id] += 1
+    
+    def __incr_frame__(self, channel_id: int, amount: int):
+        if channel_id not in self.f_size.keys():
+            self.f_size[channel_id] = 0
+        self.f_size[channel_id] += amount
+        
+    def __extract__(self, ch10_path: str, info: FrameInfo):
+        for packet in tqdm(C10(ch10_path)):
+            if not packet.data_type == 0x01:
+                self.__incr_time__(packet.channel_id)
+            if packet.data_type == 0x09:
+                packet: PCMF1 = packet
+                frame_count = BodyStream.get_frame_count(packet.buffer.read(), info)
+                self.__incr_frame__(packet.channel_id, frame_count)

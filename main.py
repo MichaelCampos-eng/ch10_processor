@@ -5,13 +5,14 @@ from chapter10.computer import ComputerF1
 from chapter10.time import TimeF1
 
 from tmats import GeneralData, Recorder, PCMFormat
-from stream import BodyStream, FrameInfo, TimeInfo
+from stream import BodyStream, FrameInfo, TimeInfo, MemorySize
 from names import PJson
+import numpy as np
+import pandas as pd
 
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-from scipy.interpolate import interp1d
-import numpy as np
+
+from numpy.lib.stride_tricks import sliding_window_view
 
 from typing import Optional
 import argparse
@@ -19,8 +20,6 @@ import json
 import os
 import time
 import sys
-
-from dataclasses import dataclass
 
 """
 C10.Packet get_raw body skips over some bytes but buffer has already accounted for that
@@ -91,32 +90,27 @@ def get_tmats(ch10_path: str) -> FrameInfo:
                              minor_frame_per_major_frame = pcm_format.P1MFN,
                              frame_sync_pattern = pcm_format.P1MF5)
 
-class MemorySize:
-    def __init__(self, ch10_path: str, info: FrameInfo):
-        self.t_size: dict[int: int] = {}
-        self.f_size: dict[int: int] = {}
-        self.__index__ = 0
-        self.__extract__(ch10_path, info)
+def view_csv(csv_pth: str):
+    df: pd.DataFrame = pd.read_csv(csv_pth)
+    uniques = pd.Series(df.values.ravel()).unique()
+    counts = pd.Series(df.values.ravel()).value_counts() 
+    masks: dict[str: np.ndarray[np.uint]] = {key: (key == df.values).astype(int) for key in uniques}
 
-    def __incr_time__(self, channel_id: int):
-        if channel_id not in self.t_size.keys():
-            self.t_size[channel_id] = 0
-        self.t_size[channel_id] += 1
+    stream = np.load("decoded_frames.npy").ravel()
+    time = np.load("decoded_times.npy")
+
+    sfid = masks["SFID"]
     
-    def __incr_frame__(self, channel_id: int, amount: int):
-        if channel_id not in self.f_size.keys():
-            self.f_size[channel_id] = 0
-        self.f_size[channel_id] += amount
-        
-    def __extract__(self, ch10_path: str, info: FrameInfo):
-        for packet in tqdm(C10(ch10_path)):
-            if not packet.data_type == 0x01:
-                self.__incr_time__(packet.channel_id)
-            if packet.data_type == 0x09:
-                packet: PCMF1 = packet
-                frame_count = BodyStream.get_frame_count(packet.buffer.read(), info)
-                self.__incr_frame__(packet.channel_id, frame_count)
+    #memory allocation
+    data_count = counts.ilocp["SFID"] * stream.shape[1] // 64
+    data_times = np.empty((data_count, ), dtype=np.longdouble)
+    data = np.empty( (data_count, ), dtype=np.longdouble)
+    
+    
+    
 
+    print(time)
+    
 
 def decode_ch10(ch10_path: str,
                  verbose: bool,
@@ -152,11 +146,12 @@ def decode_ch10(ch10_path: str,
 
         if iterations and iterations == index:
             end = time.time()
-            stream: BodyStream = payloads[packet.channel_id]
+            stream: BodyStream = payloads[channel]
             print("Time Elapsed for decoding: {}".format(end - start))
             print("Channel ID: {}".format(packet.channel_id))
             print(stream)
-            print(stream.time_info.relative_times)
+            np.save("decoded_frames.npy", stream.__frames__)
+            np.save("decoded_times.npy", stream.time_info.relative_times)
             break
         index += 1
 
@@ -199,10 +194,14 @@ if __name__ == "__main__":
     parser.add_argument("-s", '--save')
     parser.add_argument('-et', '--extract_tmats')
     parser.add_argument('-ep', '--explore_tmats')
+    parser.add_argument('-csv', '--import_csv')
 
     args = parser.parse_args()
 
-    if args.decode and not args.extract_tmats and not args.explore_tmats:
+    if args.import_csv:
+        view_csv(args.import_csv)
+
+    elif args.decode and not args.extract_tmats and not args.explore_tmats and not args.import_csv:
         decode_ch10(ch10_path= args.decode, 
                      verbose= args.verbose, 
                      channel= int(args.channel_id) if args.channel_id else None,
