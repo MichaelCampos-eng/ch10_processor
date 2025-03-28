@@ -17,6 +17,7 @@ from typing import Optional
 import argparse
 import json
 import os
+import time
 import sys
 
 from dataclasses import dataclass
@@ -122,9 +123,12 @@ def decode_ch10(ch10_path: str,
                  channel: Optional[int],
                  iterations: Optional[int]):
     
-
+    
     info: FrameInfo = get_tmats(ch10_path)
+    start = time.time()
     memory = MemorySize(ch10_path, info)
+    end = time.time()
+    print("Time elapsed for memory extraction: {}".format(end - start))
 
     # Set up times
     times: list[int: TimeInfo] = {}
@@ -140,14 +144,19 @@ def decode_ch10(ch10_path: str,
     index = 0
     offset = None
     last_packet: Packet = None
+    start = time.time()
     for packet in C10(ch10_path):
-        print(index)
+
         if packet.data_type == 0x01:
             continue
 
         if iterations and iterations == index:
+            end = time.time()
+            stream: BodyStream = payloads[packet.channel_id]
+            print("Time Elapsed for decoding: {}".format(end - start))
             print("Channel ID: {}".format(packet.channel_id))
-            print(payloads[packet.channel_id])
+            print(stream)
+            print(stream.time_info.relative_times)
             break
         index += 1
 
@@ -160,9 +169,9 @@ def decode_ch10(ch10_path: str,
             # Compute deltas
             curr_timeinfo: TimeInfo = times[packet.channel_id]
             last_timeinfo: TimeInfo = times[last_packet.channel_id]
-            curr_timeinfo.append_time(packet.get_time(), offset)
             last_timeinfo.append_delta_time(packet.get_time(), offset)
-
+            curr_timeinfo.append_time(packet.get_time(), offset)
+            
             # Compute time for each word
             if last_packet.data_type == 0x09:
                 last_packet: PCMF1 = last_packet
@@ -171,6 +180,7 @@ def decode_ch10(ch10_path: str,
                 if not bodystream.is_empty:
                     bodystream.compute_times()
                 bodystream.append_body(last_packet.buffer.read())
+                
 
         last_packet = packet
                 

@@ -36,22 +36,25 @@ class FrameInfo:
 
 class TimeInfo:
     
+    nanoseconds = 1e9
+
     def __init__(self, time_size: int, stream_size: Optional[int]):
         self.__t_stamps__: np.ndarray[np.uint64] = np.empty((time_size,), dtype=np.uint64)
         self.__delta_times__: np.ndarray[np.uint64] = np.empty((time_size - 1,), dtype=np.uint64)
-        self.times: Optional[np.ndarray[np.uint64]] = np.empty((stream_size, ), np.uint64) if stream_size else None
+        self.relative_times: Optional[np.ndarray[np.uint64]] = np.empty((stream_size, ), np.uint64) if stream_size else None
 
         self.__ts_index__: int = 0
         self.__dt_index__: int = 0
 
     def append_time(self, timestamp: datetime.datetime, offset: datetime.datetime):
-        self.__t_stamps__[self.__ts_index__] = (timestamp - offset).total_seconds()
+        if self.__ts_index__ < self.__t_stamps__.size:
+            self.__t_stamps__[self.__ts_index__] = (timestamp - offset).total_seconds() * TimeInfo.nanoseconds
+            self.__ts_index__ += 1
     
     def append_delta_time(self, new_time: datetime.datetime, offset: datetime.datetime):
         if self.__dt_index__ < self.__delta_times__.size:
-            self.__delta_times__[self.__dt_index__] = (new_time - offset).total_seconds() - self.get_ts()
+            self.__delta_times__[self.__dt_index__] = (new_time - offset).total_seconds() * TimeInfo.nanoseconds - self.get_ts()
             self.__dt_index__ += 1
-            self.__ts_index__ += 1
     
     # Retrieves the latest dt appended
     def get_dt(self):
@@ -70,14 +73,14 @@ class BodyStream:
     def __init__(self, time_info: TimeInfo, frame_info: FrameInfo, memory: int):
         self.time_info: TimeInfo = time_info
         self.frame_info: FrameInfo = frame_info
-        self.__frames__ = np.empty((frame_info.minor_frame_length, memory), dtype=np.uint8)
+        self.__frames__ = np.empty((frame_info.minor_frame_length, memory), dtype=np.uint16)
         self.__delta__: int = None
         self.__index__ = 0
     
     def __str__(self):
         frames_contents = "Number of frames: {}, Frame length: {}\n".format(self.__frames__.shape[1], self.__frames__.shape[0])
         time_contents = "Number of time deltas: {}\n".format(self.time_info.count)
-        dt_contents = "Number of times: {}\n".format(self.time_info.times.shape)
+        dt_contents = "Number of times: {}\n".format(self.time_info.relative_times.shape)
         divider = "#" * 50
         return frames_contents + time_contents  + dt_contents + divider
     
@@ -90,14 +93,14 @@ class BodyStream:
 
     def compute_times(self):
         sub_times = np.arange(self.__delta__) * self.time_info.get_dt() / self.__delta__ + self.time_info.get_ts()
-        self.time_info.times[self.__index__ - self.__delta__ : self.__index__] = sub_times
+        self.time_info.relative_times[self.__index__ - self.__delta__ : self.__index__] = sub_times
     
     @property
     def is_empty(self):
         return self.__index__ == 0
     
     @staticmethod
-    def extract_frames(data: np.ndarray[np.uint8], info: FrameInfo) -> np.ndarray[np.uint16]:
+    def extract_frames(data: np.ndarray[np.uint8], info: FrameInfo) -> np.ndarray[np.uint8]:
         potentials_indices = {}
         for i in range(info.byte_width):
             aligned = BodyStream.__align__(data, i, info.byte_width)
@@ -107,7 +110,7 @@ class BodyStream:
         aligned = BodyStream.__align__(data, shift, info.byte_width)
         frames = np.empty((info.minor_frame_length, len(indices)), dtype=np.uint16)
         for count, index in enumerate(indices):
-            frames[:, count] = aligned[index - info.frame_byte_length + 4: index + 4].astype(np.uint8).view('<u2')
+            frames[:, count] = aligned[index - info.frame_byte_length + 4: index + 4].view('<u2').astype(np.uint16)
         return frames
 
     @staticmethod
